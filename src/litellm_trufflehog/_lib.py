@@ -23,12 +23,12 @@ from pathlib import Path
 from typing import Final
 
 __all__ = [
-    "TrufflehogError",
     "NativeLibraryNotFound",
+    "TrufflehogError",
+    "check",
     "lib",
     "native_library_path",
     "take",
-    "check",
 ]
 
 
@@ -61,9 +61,7 @@ def native_library_path() -> Path:
     if override:
         path = Path(override)
         if not path.is_file():
-            raise NativeLibraryNotFound(
-                f"{LIB_PATH_ENV} points at {path}, which does not exist"
-            )
+            raise NativeLibraryNotFound(f"{LIB_PATH_ENV} points at {path}, which does not exist")
         return path
 
     candidate = Path(__file__).parent / "_native" / _library_filename()

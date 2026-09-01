@@ -19,9 +19,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Literal, Mapping, Sequence
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
-from .scanner import RedactionError, ScanReport, Scanner, get_scanner
+from .scanner import RedactionError, Scanner, ScanReport, get_scanner
 from .stream import DEFAULT_OVERLAP_CHARS, StreamScanner
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -52,7 +53,7 @@ try:
 except Exception:  # pragma: no cover
     _logger = logging.getLogger(__name__)
 
-__all__ = ["TrufflehogGuardrail", "SecretDetected", "OnDetection"]
+__all__ = ["OnDetection", "SecretDetected", "TrufflehogGuardrail"]
 
 OnDetection = Literal["block", "redact", "log"]
 _VALID_ACTIONS: tuple[str, ...] = ("block", "redact", "log")
@@ -154,9 +155,7 @@ class TrufflehogGuardrail(_Base):
     ) -> None:
         action = str(on_detection).lower()
         if action not in _VALID_ACTIONS:
-            raise ValueError(
-                f"on_detection must be one of {_VALID_ACTIONS}, got {on_detection!r}"
-            )
+            raise ValueError(f"on_detection must be one of {_VALID_ACTIONS}, got {on_detection!r}")
         self.on_detection: str = action
         self.block_on_truncation = bool(block_on_truncation)
         self.block_on_scan_error = bool(block_on_scan_error)
@@ -203,9 +202,7 @@ class TrufflehogGuardrail(_Base):
         texts: list[str] = list(inputs.get("texts") or [])
 
         if texts:
-            reports = await asyncio.gather(
-                *(self._scanner.scan_async(text) for text in texts)
-            )
+            reports = await asyncio.gather(*(self._scanner.scan_async(text) for text in texts))
             combined = _combine(reports)
 
             needs_action = (
@@ -285,9 +282,11 @@ class TrufflehogGuardrail(_Base):
 
         if self.on_detection == "redact":
             try:
+                # strict=True: a length mismatch would silently drop the tail of
+                # `texts`, leaving those unredacted.
                 masked = [
                     self._scanner._apply_redaction(text, report) if report.findings else text
-                    for text, report in zip(texts, reports)
+                    for text, report in zip(texts, reports, strict=True)
                 ]
             except RedactionError as exc:
                 # Fail closed: a secret we cannot locate cannot be masked.

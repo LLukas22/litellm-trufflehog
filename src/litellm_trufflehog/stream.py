@@ -16,11 +16,12 @@ by ``DefaultPeekSize`` (3 KiB) for exactly this reason.
 
 from __future__ import annotations
 
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
-from .scanner import Finding, ScanReport, Scanner, get_scanner
+from .scanner import Finding, Scanner, ScanReport, get_scanner
 
-__all__ = ["StreamScanner", "DEFAULT_OVERLAP_CHARS"]
+__all__ = ["DEFAULT_OVERLAP_CHARS", "StreamScanner"]
 
 #: Characters of previously-scanned text prepended to each new window. Chosen to
 #: match trufflehog's 3 KiB peek size; any credential shorter than this cannot be
@@ -34,7 +35,7 @@ class StreamScanner:
     Not thread-safe: one instance belongs to one stream.
     """
 
-    __slots__ = ("_scanner", "_overlap", "_tail", "_seen", "_chars_seen")
+    __slots__ = ("_chars_seen", "_overlap", "_scanner", "_seen", "_tail")
 
     def __init__(
         self,

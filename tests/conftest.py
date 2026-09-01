@@ -9,6 +9,8 @@ word. That rules out AWS's published EXAMPLE keys and any alphabet run such as
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
 
 from litellm_trufflehog import Scanner
@@ -44,7 +46,7 @@ def native_available() -> bool:
 
 
 @pytest.fixture(scope="session")
-def scanner(native_available: bool) -> Scanner:
+def scanner(native_available: bool) -> Iterator[Scanner]:
     """Session-scoped scanner: construction is the expensive part."""
     s = Scanner(profile="core")
     yield s
@@ -52,7 +54,7 @@ def scanner(native_available: bool) -> Scanner:
 
 
 @pytest.fixture(scope="session")
-def minimal_scanner(native_available: bool) -> Scanner:
+def minimal_scanner(native_available: bool) -> Iterator[Scanner]:
     s = Scanner(profile="minimal")
     yield s
     s.close()

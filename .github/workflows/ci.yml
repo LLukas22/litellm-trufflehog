@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOTOOLCHAIN: auto
+
+jobs:
+  go:
+    name: Go (vet + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - run: go vet ./...
+        working-directory: go
+
+      # Includes the profile guard, which fails if a curated detector name no
+      # longer matches a detector trufflehog actually ships.
+      - run: go test ./... -count=1
+        working-directory: go
+
+      - name: Race detector
+        run: go test ./... -count=1 -race
+        working-directory: go
+
+  python:
+    name: Python (lint + types + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+          cache-dependency-path: go/go.sum
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - uses: extractions/setup-just@v2
+
+      - name: Build shared library
+        run: just build
+
+      - run: just sync
+
+      - run: just lint
+
+      - run: just typecheck
+
+      - run: just test-py
+
+  wheel:
+    name: manylinux wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Builds in quay.io/pypa/manylinux_2_28_x86_64, runs auditwheel to prove
+      # portability, and smoke-tests the wheel on a different CPython than it
+      # was built with to confirm the single py3-none wheel really is
+      # ABI-independent.
+      - name: Build and verify wheel
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/build-wheel.Dockerfile
+          outputs: type=local,dest=dist
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - run: ls -lh dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: dist/*.whl
+          if-no-files-found: error

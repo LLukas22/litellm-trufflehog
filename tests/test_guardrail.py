@@ -8,16 +8,24 @@ from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 import pytest
 
 from conftest import AWS_KEY_ID, AWS_SECRET, CLEAN_TEXT, GITHUB_PAT, assert_no_secrets
-from litellm_trufflehog import ScanReport, Scanner
+from litellm_trufflehog import Scanner, ScanReport
 from litellm_trufflehog.guardrail import (
     DEFAULT_STREAM_HOLDBACK_CHARS,
     SecretDetected,
     TrufflehogGuardrail,
 )
+
+try:  # The guardrail raises HTTPException when fastapi is importable.
+    from fastapi import HTTPException
+
+    BLOCKED: tuple[type[BaseException], ...] = (HTTPException, SecretDetected)
+except ImportError:
+    BLOCKED = (SecretDetected,)
 
 
 def run(coro):
@@ -29,12 +37,12 @@ def guard(scanner: Scanner) -> TrufflehogGuardrail:
     return TrufflehogGuardrail(scanner=scanner, on_detection="block")
 
 
-def apply(guard: TrufflehogGuardrail, texts: list[str], input_type: str = "request"):
-    return run(
-        guard.apply_guardrail(
-            {"texts": texts}, request_data={}, input_type=input_type
-        )
-    )
+def apply(
+    guard: TrufflehogGuardrail,
+    texts: list[str],
+    input_type: Literal["request", "response"] = "request",
+):
+    return run(guard.apply_guardrail({"texts": texts}, request_data={}, input_type=input_type))
 
 
 def blocking_error(exc: BaseException) -> dict:
@@ -59,7 +67,7 @@ def test_clean_request_passes_through(guard: TrufflehogGuardrail) -> None:
 
 
 def test_secret_in_request_is_blocked(guard: TrufflehogGuardrail) -> None:
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         apply(guard, [f"my key is {GITHUB_PAT}"])
 
     detail = blocking_error(exc_info.value)
@@ -71,7 +79,7 @@ def test_secret_in_request_is_blocked(guard: TrufflehogGuardrail) -> None:
 def test_block_message_never_contains_the_secret(guard: TrufflehogGuardrail) -> None:
     """The whole point: an error body that echoed the secret would re-leak it,
     often into client logs."""
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         apply(guard, [f"aws={AWS_KEY_ID} secret={AWS_SECRET} gh={GITHUB_PAT}"])
 
     exc = exc_info.value
@@ -80,12 +88,12 @@ def test_block_message_never_contains_the_secret(guard: TrufflehogGuardrail) -> 
 
 
 def test_blocks_when_any_of_several_texts_is_dirty(guard: TrufflehogGuardrail) -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(BLOCKED):
         apply(guard, [CLEAN_TEXT, "hello", f"token {GITHUB_PAT}"])
 
 
 def test_response_direction_is_blocked_too(guard: TrufflehogGuardrail) -> None:
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         apply(guard, [f"here you go: {GITHUB_PAT}"], input_type="response")
     assert blocking_error(exc_info.value)["input_type"] == "response"
 
@@ -125,7 +133,7 @@ def test_redact_falls_back_to_block_when_unredactable(scanner: Scanner, monkeypa
     # Scanner uses __slots__, so patch the class rather than the instance.
     monkeypatch.setattr(Scanner, "_apply_redaction", staticmethod(boom))
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         apply(guard, [f"token {GITHUB_PAT}"])
     assert blocking_error(exc_info.value)["error"] == "secret_detected"
 
@@ -173,7 +181,7 @@ def test_oversized_input_is_blocked_by_default(native_available: bool) -> None:
     small = Scanner(profile="minimal", max_bytes=32)
     guard = TrufflehogGuardrail(scanner=small, block_on_truncation=True)
     try:
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(BLOCKED) as exc_info:
             apply(guard, ["y" * 500])
         assert blocking_error(exc_info.value)["truncated"] is True
     finally:
@@ -198,7 +206,7 @@ def test_truncation_can_be_allowed(native_available: bool) -> None:
 
 
 def _force_report(monkeypatch, report: ScanReport) -> None:
-    async def fake_scan_async(self, text):  # noqa: ANN001
+    async def fake_scan_async(self, text):
         return report
 
     # Scanner uses __slots__, so patch the class.
@@ -216,7 +224,7 @@ def test_degraded_scan_is_blocked_even_with_no_findings(scanner: Scanner, monkey
     guard = TrufflehogGuardrail(scanner=scanner, on_detection="block")
     _force_report(monkeypatch, DEGRADED)
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         apply(guard, ["anything at all"])
 
     detail = blocking_error(exc_info.value)
@@ -230,7 +238,7 @@ def test_degraded_scan_blocks_in_redact_mode_too(scanner: Scanner, monkeypatch) 
     guard = TrufflehogGuardrail(scanner=scanner, on_detection="redact")
     _force_report(monkeypatch, DEGRADED)
 
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         apply(guard, ["anything at all"])
     assert blocking_error(exc_info.value)["error"] == "scan_error"
 
@@ -249,7 +257,7 @@ def test_truncation_reason_is_distinct(native_available: bool) -> None:
     small = Scanner(profile="minimal", max_bytes=32)
     guard = TrufflehogGuardrail(scanner=small)
     try:
-        with pytest.raises(Exception) as exc_info:
+        with pytest.raises(BLOCKED) as exc_info:
             apply(guard, ["y" * 500])
         assert blocking_error(exc_info.value)["error"] == "scan_truncated"
     finally:
@@ -260,8 +268,43 @@ def test_truncation_reason_is_distinct(native_available: bool) -> None:
 
 
 def test_invalid_on_detection_rejected(scanner: Scanner) -> None:
+    """Config comes from YAML, so an invalid value must be rejected at runtime
+    even though the type annotation forbids it."""
     with pytest.raises(ValueError, match="on_detection"):
-        TrufflehogGuardrail(scanner=scanner, on_detection="destroy")
+        TrufflehogGuardrail(scanner=scanner, on_detection="destroy")  # ty: ignore[invalid-argument-type]
+
+
+@pytest.mark.skipif(
+    "litellm" not in str(TrufflehogGuardrail.__mro__),
+    reason="litellm not installed; the fallback base class is in use",
+)
+def test_integrates_with_real_litellm_base_class(scanner: Scanner) -> None:
+    """Pin the litellm integration.
+
+    If litellm renames or moves CustomGuardrail, or stops routing through
+    CustomLogger, this fails loudly instead of the guardrail silently falling
+    back to the stub base class and never being invoked by the proxy.
+    """
+    from litellm.integrations.custom_guardrail import CustomGuardrail
+    from litellm.integrations.custom_logger import CustomLogger
+
+    guard = TrufflehogGuardrail(scanner=scanner, guardrail_name="trufflehog")
+    assert isinstance(guard, CustomGuardrail)
+    # The proxy only dispatches CustomLogger instances.
+    assert isinstance(guard, CustomLogger)
+
+
+def test_block_raises_http_400_when_fastapi_present(scanner: Scanner) -> None:
+    fastapi_exceptions = pytest.importorskip("fastapi.exceptions")
+
+    guard = TrufflehogGuardrail(scanner=scanner, on_detection="block")
+    with pytest.raises(fastapi_exceptions.HTTPException) as exc_info:
+        apply(guard, [f"key {GITHUB_PAT}"])
+
+    assert exc_info.value.status_code == 400
+    detail = exc_info.value.detail
+    assert detail["error"] == "secret_detected"
+    assert_no_secrets(json.dumps(detail))
 
 
 def test_guardrail_builds_its_own_scanner(native_available: bool) -> None:
@@ -318,13 +361,16 @@ def test_streaming_hook_blocks_on_split_secret(guard: TrufflehogGuardrail) -> No
         _Chunk("Mn5Op7Qr9St1Uv3Wx5"),
         _Chunk(" enjoy"),
     ]
-    with pytest.raises(Exception) as exc_info:
+    with pytest.raises(BLOCKED) as exc_info:
         run(_drain(guard, chunks))
     assert blocking_error(exc_info.value)["error"] == "secret_detected"
 
 
 def test_streaming_hook_accepts_dict_chunks(guard: TrufflehogGuardrail) -> None:
-    chunks = [{"choices": [{"delta": {"content": "hi "}}]}, {"choices": [{"delta": {"content": "there"}}]}]
+    chunks = [
+        {"choices": [{"delta": {"content": "hi "}}]},
+        {"choices": [{"delta": {"content": "there"}}]},
+    ]
     assert len(run(_drain(guard, chunks))) == 2
 
 

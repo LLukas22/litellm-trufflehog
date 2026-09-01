@@ -3,23 +3,25 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import threading
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Iterator, Mapping, Sequence
+from typing import Any
 
-from ._lib import TrufflehogError, check, lib, last_error, take
+from ._lib import TrufflehogError, check, last_error, lib
 
 __all__ = [
-    "Span",
+    "REDACTION_TEMPLATE",
     "Finding",
+    "RedactionError",
     "ScanReport",
     "Scanner",
-    "RedactionError",
+    "Span",
     "get_scanner",
     "native_version",
     "profiles",
-    "REDACTION_TEMPLATE",
 ]
 
 #: Replacement written over a detected secret. ``{detector}`` is substituted.
@@ -76,13 +78,11 @@ class Finding:
         return self.detector_name or self.detector_type
 
     @classmethod
-    def _from_json(cls, obj: Mapping[str, Any]) -> "Finding":
+    def _from_json(cls, obj: Mapping[str, Any]) -> Finding:
         return cls(
             detector_type=obj.get("detector_type", "unknown"),
             secret_sha256=obj.get("secret_sha256", ""),
-            spans=tuple(
-                Span(int(s["start"]), int(s["end"])) for s in obj.get("spans") or ()
-            ),
+            spans=tuple(Span(int(s["start"]), int(s["end"])) for s in obj.get("spans") or ()),
             detector_name=obj.get("detector_name", "") or "",
             description=obj.get("description", "") or "",
             verified=bool(obj.get("verified", False)),
@@ -153,7 +153,7 @@ class ScanReport:
         }
 
     @classmethod
-    def _from_json(cls, obj: Mapping[str, Any]) -> "ScanReport":
+    def _from_json(cls, obj: Mapping[str, Any]) -> ScanReport:
         return cls(
             findings=tuple(Finding._from_json(f) for f in obj.get("findings") or ()),
             scanned_bytes=int(obj.get("scanned_bytes", 0)),
@@ -202,7 +202,7 @@ class Scanner:
     is ever transmitted to a third party).
     """
 
-    __slots__ = ("_handle", "_config", "_lock", "_closed")
+    __slots__ = ("_closed", "_config", "_handle", "_lock")
 
     def __init__(
         self,
@@ -300,9 +300,7 @@ class Scanner:
 
     # -- redaction --------------------------------------------------------
 
-    def redact(
-        self, text: str, *, template: str = REDACTION_TEMPLATE
-    ) -> tuple[str, ScanReport]:
+    def redact(self, text: str, *, template: str = REDACTION_TEMPLATE) -> tuple[str, ScanReport]:
         """Mask every detected secret in ``text``.
 
         Returns the masked text and the report. Raises :class:`RedactionError`
@@ -321,9 +319,7 @@ class Scanner:
         if not report.findings:
             return text, report
         return (
-            await asyncio.to_thread(
-                self._apply_redaction, text, report, template=template
-            ),
+            await asyncio.to_thread(self._apply_redaction, text, report, template=template),
             report,
         )
 
@@ -338,9 +334,7 @@ class Scanner:
         containing non-ASCII characters, so the splice happens on bytes.
         """
         if not report.fully_redactable:
-            unlocatable = sorted(
-                {f.label for f in report.findings if not f.redactable}
-            )
+            unlocatable = sorted({f.label for f in report.findings if not f.redactable})
             raise RedactionError(
                 "cannot redact secrets that were not locatable in the input "
                 f"(detectors: {', '.join(unlocatable)}); block the request instead"
@@ -380,22 +374,20 @@ class Scanner:
             if self._closed:
                 return
             self._closed = True
-            try:
+            # Suppressed because close() runs from __del__ during interpreter
+            # shutdown, when the library or its handle may already be gone.
+            with contextlib.suppress(Exception):  # pragma: no cover
                 lib.th_close(self._handle)
-            except Exception:  # pragma: no cover - interpreter teardown
-                pass
 
-    def __enter__(self) -> "Scanner":
+    def __enter__(self) -> Scanner:
         return self
 
     def __exit__(self, *exc_info: object) -> None:
         self.close()
 
     def __del__(self) -> None:  # pragma: no cover - GC timing
-        try:
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
     def __repr__(self) -> str:
         state = "closed" if self._closed else f"handle={self._handle}"

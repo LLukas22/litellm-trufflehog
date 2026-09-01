@@ -13,7 +13,7 @@ from conftest import (
     SLACK_TOKEN,
     assert_no_secrets,
 )
-from litellm_trufflehog import RedactionError, ScanReport, Scanner, Span
+from litellm_trufflehog import RedactionError, Scanner, ScanReport, Span
 from litellm_trufflehog.scanner import Finding, _merge_labelled_spans
 
 
@@ -70,9 +70,7 @@ def test_redacts_repeated_occurrences(scanner: Scanner) -> None:
         ("مفتاح ", " نهاية"),
     ],
 )
-def test_redaction_preserves_non_ascii_context(
-    scanner: Scanner, prefix: str, suffix: str
-) -> None:
+def test_redaction_preserves_non_ascii_context(scanner: Scanner, prefix: str, suffix: str) -> None:
     """Byte offsets must be applied to bytes.
 
     Slicing the str with byte offsets would shift the cut points by the number of
@@ -106,9 +104,7 @@ def test_clean_text_is_returned_unchanged(scanner: Scanner) -> None:
 
 
 def test_custom_template(scanner: Scanner) -> None:
-    masked, _ = scanner.redact(
-        f"token {GITHUB_PAT}", template="<<{detector} removed>>"
-    )
+    masked, _ = scanner.redact(f"token {GITHUB_PAT}", template="<<{detector} removed>>")
     assert "<<Github removed>>" in masked
     assert GITHUB_PAT not in masked
 
@@ -127,11 +123,7 @@ def test_unlocatable_finding_refuses_to_redact() -> None:
 
 def test_out_of_range_span_is_rejected() -> None:
     report = ScanReport(
-        findings=(
-            Finding(
-                detector_type="AWS", secret_sha256="x", spans=(Span(0, 9999),)
-            ),
-        )
+        findings=(Finding(detector_type="AWS", secret_sha256="x", spans=(Span(0, 9999),)),)
     )
     with pytest.raises(RedactionError, match="out of range"):
         Scanner._apply_redaction("short", report)
@@ -141,9 +133,7 @@ def test_span_landing_mid_codepoint_is_rejected() -> None:
     """Splitting a multibyte character must not yield mojibake."""
     text = "aa€bb"  # € is 3 bytes: e2 82 ac
     report = ScanReport(
-        findings=(
-            Finding(detector_type="Test", secret_sha256="x", spans=(Span(0, 3),)),
-        )
+        findings=(Finding(detector_type="Test", secret_sha256="x", spans=(Span(0, 3),)),)
     )
     with pytest.raises(RedactionError, match="invalid UTF-8"):
         Scanner._apply_redaction(text, report)
@@ -182,9 +172,7 @@ def test_merge_labelled_spans_keeps_disjoint() -> None:
 
 
 def test_merge_labelled_spans_ignores_empty() -> None:
-    findings = (
-        Finding(detector_type="A", secret_sha256="1", spans=(Span(3, 3),)),
-    )
+    findings = (Finding(detector_type="A", secret_sha256="1", spans=(Span(3, 3),)),)
     assert _merge_labelled_spans(findings) == []
 
 

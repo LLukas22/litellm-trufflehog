@@ -17,8 +17,8 @@ from conftest import (
 )
 from litellm_trufflehog import (
     Finding,
-    ScanReport,
     Scanner,
+    ScanReport,
     Span,
     TrufflehogError,
     get_scanner,
@@ -110,10 +110,7 @@ def test_multipart_credential_reports_every_part(scanner: Scanner) -> None:
 def test_repeated_secret_gets_one_span_each(scanner: Scanner) -> None:
     text = f"first {GITHUB_PAT} then {GITHUB_PAT}"
     starts = [
-        s.start
-        for f in scanner.scan(text).findings
-        if f.detector_type == "Github"
-        for s in f.spans
+        s.start for f in scanner.scan(text).findings if f.detector_type == "Github" for s in f.spans
     ]
     assert len(starts) >= 2
     assert len(set(starts)) == len(starts), "spans must be distinct"
@@ -181,9 +178,10 @@ def test_exclude_detectors(native_available: bool) -> None:
 
 
 def test_include_detectors_widens_profile(native_available: bool) -> None:
-    with Scanner(profile="minimal") as base, Scanner(
-        profile="minimal", include_detectors=["Vercel", "Notion"]
-    ) as wider:
+    with (
+        Scanner(profile="minimal") as base,
+        Scanner(profile="minimal", include_detectors=["Vercel", "Notion"]) as wider,
+    ):
         assert wider.detector_count > base.detector_count
 
 

@@ -3,6 +3,7 @@ package scanner
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -385,6 +386,51 @@ func TestVerifyDefaultsOffEvenWhenParsed(t *testing.T) {
 	}
 	if cfg.Verify {
 		t.Fatal("verification must never be enabled implicitly")
+	}
+}
+
+// A single Scanner is shared across requests by design, so concurrent use must
+// be safe. Run with -race to make this meaningful.
+func TestConcurrentScansAreSafe(t *testing.T) {
+	s := newTestScanner(t, Config{Profile: ProfileCore})
+
+	inputs := []string{
+		"token " + fakeGitHubPAT,
+		"What is the capital of France?",
+		"openai " + fakeOpenAIKey,
+		"id=" + fakeAWSKeyID + " secret=" + fakeAWSSecret,
+		"slack " + fakeSlackBotToken,
+		strings.Repeat("harmless filler. ", 50),
+	}
+
+	const workers = 32
+	var wg sync.WaitGroup
+	errs := make(chan string, workers)
+
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			text := inputs[i%len(inputs)]
+			report := s.Scan(context.Background(), []byte(text))
+
+			// Every input either always yields findings or never does; a
+			// concurrency bug typically shows up as intermittently empty results.
+			wantFindings := !strings.Contains(text, "capital of France") &&
+				!strings.Contains(text, "harmless filler")
+			if wantFindings && len(report.Findings) == 0 {
+				errs <- "expected findings for " + text[:min(20, len(text))]
+			}
+			if !wantFindings && len(report.Findings) != 0 {
+				errs <- "unexpected findings for clean input"
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+
+	for msg := range errs {
+		t.Error(msg)
 	}
 }
 

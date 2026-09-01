@@ -26,8 +26,8 @@ from .scanner import (
     REDACTION_TEMPLATE,
     Finding,
     RedactionError,
-    ScanReport,
     Scanner,
+    ScanReport,
     Span,
     get_scanner,
     native_version,
@@ -37,7 +37,9 @@ from .stream import DEFAULT_OVERLAP_CHARS, StreamScanner
 
 __version__ = "0.1.0"
 
-__all__ = [
+# Grouped by role rather than sorted alphabetically: this is the public API and
+# the grouping is the documentation.
+__all__ = [  # noqa: RUF022
     "__version__",
     # scanning
     "Scanner",

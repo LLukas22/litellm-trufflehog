@@ -1,0 +1,102 @@
+[build-system]
+# >=77 for PEP 639 `license` as an SPDX string plus `license-files`.
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "litellm-trufflehog"
+version = "0.1.0"
+description = "Simple & fast trufflehog secrets scanning for LiteLLM"
+readme = "README.md"
+# 3.10+ because the dataclasses use slots=True.
+requires-python = ">=3.10"
+license = "AGPL-3.0-or-later"
+license-files = ["LICENSE"]
+authors = [{ name = "LLukas22" }]
+keywords = ["litellm", "trufflehog", "secrets", "guardrail", "security", "llm"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "Intended Audience :: System Administrators",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Go",
+  "Topic :: Security",
+  "Topic :: Software Development :: Quality Assurance",
+  "Operating System :: POSIX :: Linux",
+]
+# No runtime dependencies: the scanner is a self-contained shared library loaded
+# with ctypes from the standard library.
+dependencies = []
+
+[project.optional-dependencies]
+# Only needed to run the guardrail inside the proxy; the scanner works standalone.
+litellm = ["litellm>=1.60"]
+
+[dependency-groups]
+dev = [
+  "pytest>=8.0",
+  "ty>=0.0.1a1",
+  "ruff>=0.6",
+  # Installed for development so that the type checker resolves the real
+  # CustomGuardrail base class and the tests exercise it, rather than the
+  # fallback stub. Both stay optional at runtime.
+  "litellm>=1.60",
+  # Ships with the proxy (litellm[proxy]) but not with base litellm; we import
+  # it for HTTPException, so pull it in explicitly to test the real path.
+  "fastapi>=0.100",
+]
+
+[project.urls]
+Homepage = "https://github.com/LLukas22/litellm-trufflehog"
+Source = "https://github.com/LLukas22/litellm-trufflehog"
+Issues = "https://github.com/LLukas22/litellm-trufflehog/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+# Contains a compiled library, so the wheel is not pure Python.
+zip-safe = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+litellm_trufflehog = ["py.typed", "_native/*.so", "_native/*.dll", "_native/*.dylib"]
+
+[tool.uv]
+# The package builds a 145 MB Go library, so avoid rebuilding it on every sync.
+# `just dev` builds it explicitly instead.
+package = false
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-ra"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ty.environment]
+python-version = "3.10"
+root = ["./src", "./tests"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.rules]
+# litellm is installed in the dev group, so imports must resolve; a genuinely
+# missing module is a real error rather than an expected optional import.
+unresolved-import = "error"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+# Ruff formats fenced code blocks in Markdown; the README uses aligned trailing
+# comments as a readability device, so leave prose files alone.
+extend-exclude = ["*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests reach into private helpers deliberately to exercise failure paths.
+"tests/*" = ["SLF001"]
