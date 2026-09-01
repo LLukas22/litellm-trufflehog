@@ -21,16 +21,28 @@ with Scanner() as scanner:
 Scanning happens on the request path, so process-per-request is not viable. This links
 trufflehog's detector engine directly:
 
-Measured with `just bench` on the `core` profile (128 detectors), i7-1270P:
+Median latency of `Scanner.scan()` measured from Python with `just bench-py`, `core` profile
+(128 detectors), i7-1270P. These are end-to-end figures: the ctypes call, the scan, JSON
+decoding and object construction.
 
-| | |
-|---|---|
-| Clean prompt (1.8 KB) | **~6.9 µs** — 266 MB/s, 1 alloc |
-| Prompt containing a secret | **~43 µs** |
-| Scanner construction | ~3 ms, one-off per worker process |
+| Input | Latency | Throughput |
+|---|---|---|
+| Chat turn (256 B) | **9 µs** | — |
+| Prompt (2 KiB) | **15 µs** | 103 MB/s |
+| RAG context (16 KiB) | **90 µs** | 157 MB/s |
+| Large paste (128 KiB) | **818 µs** | 149 MB/s |
+| 16 KiB *mentioning* credentials | 544 µs | 28 MB/s |
+| 16 KiB *containing* a credential | 210 µs | 69 MB/s |
+| Scanner construction | 1.5 ms (`all`: 6 ms) | one-off per worker |
 
 The fast path is an Aho-Corasick keyword prefilter over the selected detectors: text with no
-credential-shaped keywords returns immediately without running a single regex.
+credential-shaped keywords returns immediately without running a single regex. Prose that
+merely *talks about* API keys defeats that prefilter and costs ~6x more, which is the case to
+size for if you proxy a coding assistant. Choosing `all` over `core` only costs ~30% on clean
+text, because the prefilter absorbs most of the difference.
+
+The Python wrapper is not the bottleneck: JSON decoding plus object construction is ~8 µs of
+the 90 µs at 16 KiB, and encoding the input is 0.3 µs.
 
 Notably this does **not** use trufflehog's `engine.Engine`, which is built for source
 enumeration — it requires a `SourceManager` and starts four pools of worker goroutines with
@@ -109,6 +121,14 @@ overlap (matching trufflehog's own `DefaultPeekSize`) and reports each secret ex
 
 Note that terminating a stream can only stop *further* content: chunks already yielded have been
 delivered. Use `mode: pre_call` for prompts, where blocking is absolute.
+
+**Prefer the holdback path on cost grounds too.** `StreamScanner` rescans a window per chunk, so
+its cost tracks the *number of chunks*, not the size of the response. A 2 KiB response scanned
+once takes 15 µs; fed as 20-character deltas it takes 1.3 ms, and as 5-character deltas 5.5 ms —
+roughly 80x and 300x. Shrinking `overlap_chars` barely helps (0 and 3072 measure the same),
+because the cost is per-call overhead rather than rescanned bytes. If you must use the iterator
+hook, accumulate deltas and feed larger blocks: at 500-character blocks the same response costs
+68 µs.
 
 ## Detector profiles
 
@@ -220,9 +240,14 @@ just build      # compile the Go shared library into the package
 just sync       # create the venv from uv.lock
 just check      # go vet + ruff + ty + all tests
 just test-go    # Go tests only
-just bench      # Go benchmarks
+just bench      # both benchmark suites
+just bench-py   # Python benchmarks: latency and throughput as a caller sees them
+just bench-go   # Go benchmarks: the scanner in isolation
 just wheel      # release manylinux wheel in Docker -> ./dist
 ```
+
+Benchmarks are skipped by default during `just check`, and the Python suite prints a
+latency/throughput table. `just bench-save` and `just bench-compare` diff against a baseline.
 
 A C compiler is needed for cgo. `gcc`/`clang` on Linux and macOS; on Windows use mingw-w64
 (`winget install BrechtSanders.WinLibs.POSIX.UCRT`) — MSVC does not work with cgo.

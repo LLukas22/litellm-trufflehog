@@ -42,6 +42,12 @@ func init() { sanitizeStdio() }
 // keepStdioEnv re-enables Go-side stdout/stderr, for debugging only.
 const keepStdioEnv = "LITELLM_TRUFFLEHOG_KEEP_STDIO"
 
+// stdioFileEnv names a file to receive Go-side stdout/stderr instead of the null
+// device. The only way to see a native panic when the host has taken over the
+// standard handles: a panic aborts the process, so anything buffered in the
+// host's capture machinery is lost with it.
+const stdioFileEnv = "LITELLM_TRUFFLEHOG_STDIO_FILE"
+
 // sanitizeStdio redirects Go's os.Stdout/os.Stderr to the null device.
 //
 // Two reasons, both about being a library rather than a program:
@@ -67,6 +73,14 @@ const keepStdioEnv = "LITELLM_TRUFFLEHOG_KEEP_STDIO"
 func sanitizeStdio() {
 	if os.Getenv(keepStdioEnv) != "" {
 		return
+	}
+	if path := os.Getenv(stdioFileEnv); path != "" {
+		if f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o600); err == nil {
+			os.Stdout = f
+			os.Stderr = f
+			fmt.Fprintf(f, "[sanitizeStdio] redirected to %s\n", path)
+			return
+		}
 	}
 	if f, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
 		os.Stdout = f

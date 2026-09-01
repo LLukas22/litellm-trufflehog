@@ -52,10 +52,25 @@ test-race:
 vet:
     go vet ./...
 
-[doc("Run Go benchmarks")]
+[doc("Run Go benchmarks (the scanner in isolation)")]
 [working-directory: 'go']
-bench:
+bench-go:
     go test ./scanner/ -run XXX -bench . -benchmem
+
+[doc("Run Python benchmarks (the full call path, as a caller pays it)")]
+bench-py *ARGS:
+    uv run pytest --benchmark-only --benchmark-columns=min,mean,median,stddev,ops,rounds --benchmark-group-by=group --benchmark-sort=mean {{ARGS}}
+
+# Run both benchmark suites
+bench: bench-go bench-py
+
+[doc("Save a Python benchmark baseline for later --benchmark-compare runs")]
+bench-save NAME="baseline":
+    uv run pytest --benchmark-only --benchmark-save={{NAME}} --benchmark-group-by=group
+
+[doc("Compare Python benchmarks against a saved baseline")]
+bench-compare NAME="0001":
+    uv run pytest --benchmark-only --benchmark-compare={{NAME}} --benchmark-group-by=group
 
 [doc("Format Go sources")]
 [working-directory: 'go']

@@ -16,6 +16,7 @@ returned string: declaring ``restype = c_char_p`` would make ctypes convert to
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import os
 import sys
@@ -71,13 +72,89 @@ def native_library_path() -> Path:
     raise NativeLibraryNotFound(
         f"Could not find {_library_filename()} in {candidate.parent}.\n"
         "The Go library has not been built for this platform. Build it with:\n"
-        "    make dev\n"
+        "    just dev\n"
         f"or set {LIB_PATH_ENV} to an existing build."
     )
 
 
+def _stdio_is_usable(fd: int) -> bool:
+    """Whether ``fd`` is what the Go runtime will consider a working handle.
+
+    The check has to mirror how Go finds the handle, which differs by platform:
+    on POSIX it uses the file descriptor number, but on Windows it uses
+    ``GetStdHandle``, which can still return a stale handle after the
+    corresponding descriptor is closed.
+    """
+    if sys.platform != "win32":
+        try:
+            os.fstat(fd)
+        except OSError:
+            return False
+        return True
+
+    # -11 is STD_OUTPUT_HANDLE, -12 is STD_ERROR_HANDLE.
+    std_id = {1: -11, 2: -12}[fd]
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetStdHandle.restype = ctypes.c_void_p
+    handle = kernel32.GetStdHandle(ctypes.c_uint32(std_id & 0xFFFFFFFF))
+    if not handle:
+        return False
+    ctypes.set_last_error(0)
+    file_type = kernel32.GetFileType(ctypes.c_void_p(handle))
+    # FILE_TYPE_UNKNOWN with a non-zero error is the failure wazero reports as
+    # "GetFileType /dev/stdout: The handle is invalid".
+    return not (file_type == 0 and ctypes.get_last_error() != 0)
+
+
+def _repair_standard_handles() -> list[int]:
+    """Point stdout and/or stderr at the null device if they are unusable.
+
+    Must be called before the library is loaded. Loading it runs the Go runtime's
+    initialisation, including the package ``init`` of every trufflehog detector;
+    some of those compile a regex, and ``go-re2`` builds its wazero module with
+    ``WithStdout(os.Stdout)`` without checking that the handle works. If it does
+    not, the Go runtime panics - and a panic during ``dlopen`` aborts the whole
+    host process, so a proxy started with its standard handles closed would be
+    killed outright rather than merely failing the scan.
+
+    The repair is deliberately permanent. ``go-re2`` captures the handle during
+    its initialisation and reuses it for every wazero module it creates later, so
+    handing it a descriptor and then closing it again just moves the crash from
+    load time to first scan. One descriptor per broken stream, for the life of the
+    process, is the price of loading this dependency tree safely.
+
+    Only broken streams are touched, so a host with working output keeps it and
+    never loses a line to the null device.
+
+    ``os.dup2`` suffices on both platform families. On Windows the C runtime
+    updates the process's standard handles when descriptors 0-2 are duplicated, so
+    ``GetStdHandle`` - which is where Go looks - starts returning the new handle
+    without an explicit ``SetStdHandle``.
+
+    Returns the descriptors that were replaced, for tests and diagnostics.
+    """
+    replaced: list[int] = []
+    devnull = -1
+    for fd in (1, 2):
+        if _stdio_is_usable(fd):
+            continue
+        if devnull < 0:
+            devnull = os.open(os.devnull, os.O_RDWR)
+        if devnull != fd:
+            os.dup2(devnull, fd)
+        replaced.append(fd)
+
+    # fds 1 and 2 now hold their own descriptors for the null device, so the
+    # working copy is redundant unless it landed on one of them.
+    if devnull >= 0 and devnull not in replaced:
+        with contextlib.suppress(OSError):
+            os.close(devnull)
+    return replaced
+
+
 def _load() -> ctypes.CDLL:
     path = native_library_path()
+    _repair_standard_handles()
     try:
         dll = ctypes.CDLL(str(path))
     except OSError as exc:  # pragma: no cover - platform/toolchain specific
@@ -125,10 +202,22 @@ class _LazyLib:
 
     __slots__ = ("_dll",)
 
+    #: Prefix shared by every symbol the library exports.
+    _EXPORT_PREFIX = "th_"
+
     def __init__(self) -> None:
         self._dll: ctypes.CDLL | None = None
 
     def __getattr__(self, name: str):
+        # Only genuine exports may trigger the load. Without this guard any
+        # incidental attribute probe dlopens ~70 MB at an arbitrary moment,
+        # which defeats the laziness this class exists for: pytest asks every
+        # module-level object for `__test__` during collection, and inspect,
+        # copy and pickle probe their own dunders. Worse than the cost is the
+        # timing - the load then happens wherever the probe happens, and the
+        # Go runtime binds the process's standard handles at that instant.
+        if not name.startswith(self._EXPORT_PREFIX):
+            raise AttributeError(name)
         if self._dll is None:
             self._dll = _load()
         return getattr(self._dll, name)
