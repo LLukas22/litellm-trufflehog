@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Compiled Go shared library (built via make dev / CI)
+src/litellm_trufflehog/_native/*.so
+src/litellm_trufflehog/_native/*.dll
+src/litellm_trufflehog/_native/*.dylib
+src/litellm_trufflehog/_native/*.h
