@@ -1,0 +1,38 @@
+name: Update lockfile
+
+# Regenerates uv.lock against public PyPI. Runs on a GitHub-hosted runner so it
+# never touches the internal Nexus mirror that local dev machines are forced
+# to use (and which is unreachable from this runner anyway) - the resulting
+# lockfile is the one that CI can actually install from.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update-lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Regenerate uv.lock against public PyPI
+        run: uv lock -U
+
+      - name: Open PR with the refreshed lockfile
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore: update uv.lock"
+          title: "chore: update uv.lock"
+          body: |
+            Automated refresh of `uv.lock` against public PyPI (`pypi.org`),
+            generated on a GitHub-hosted runner.
+          branch: chore/update-uv-lock
+          delete-branch: true
+          add-paths: uv.lock
