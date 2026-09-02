@@ -9,10 +9,12 @@
 ARG MANYLINUX_IMAGE=quay.io/pypa/manylinux_2_28_x86_64
 ARG GO_VERSION=1.25.5
 ARG PYTHON_BIN=/opt/python/cp311-cp311/bin/python
+ARG PLAT=manylinux_2_28_x86_64
 
 FROM ${MANYLINUX_IMAGE} AS builder
 ARG GO_VERSION
 ARG PYTHON_BIN
+ARG PLAT
 
 # manylinux_2_28 is AlmaLinux 8 (glibc 2.28), which covers current Debian, Ubuntu
 # and the official LiteLLM images.
@@ -32,11 +34,17 @@ RUN cd go && go mod download
 COPY . .
 
 RUN ${PYTHON_BIN} -m pip install --no-cache-dir -q build auditwheel \
- && ${PYTHON_BIN} -m build --wheel --outdir /dist
+ && ${PYTHON_BIN} -m build --wheel --outdir /raw
 
-# Confirm the library only needs manylinux-approved shared objects; a failure
-# here means the wheel is silently non-portable.
-RUN auditwheel show /dist/*.whl
+# setuptools tags the wheel `linux_x86_64`, which PyPI rejects. `auditwheel
+# repair` is what retags it to ${PLAT}, and it fails if the library needs
+# anything outside that policy - so this both fixes the tag and proves
+# portability. `show` is only for the build log.
+RUN auditwheel show /raw/*.whl \
+ && auditwheel repair --plat ${PLAT} --wheel-dir /dist /raw/*.whl \
+ && ls -1 /dist \
+ && case "$(ls /dist)" in *manylinux*) ;; \
+      *) echo "wheel is not tagged manylinux; PyPI would reject it" >&2; exit 1;; esac
 
 # Smoke-test on a *different* Python version than it was built with, to prove the
 # single wheel really is ABI-independent.

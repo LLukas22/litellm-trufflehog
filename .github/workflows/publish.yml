@@ -65,3 +65,21 @@ jobs:
           path: dist
 
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  attach:
+    name: Attach wheel to the release
+    needs: publish
+    runs-on: ubuntu-latest
+    # Separate job so the publishing job keeps id-token as its only permission.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+
+      # --clobber so re-running the job replaces the asset instead of failing.
+      - run: gh release upload "${GITHUB_REF_NAME}" dist/*.whl --clobber --repo "${GITHUB_REPOSITORY}"
+        env:
+          GH_TOKEN: ${{ github.token }}
