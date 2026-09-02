@@ -1,0 +1,55 @@
+# Example LiteLLM proxy configuration using litellm-trufflehog.
+#
+#   litellm --config examples/config.yaml
+#
+# Then send a request containing a credential and watch it get blocked:
+#   curl -s http://0.0.0.0:4000/v1/chat/completions \
+#     -H 'Content-Type: application/json' \
+#     -H 'Authorization: Bearer sk-1234' \
+#     -d '{"model":"gpt-4o-mini",
+#          "messages":[{"role":"user","content":"debug this: ghp_<a real-looking token>"}],
+#          "guardrails":["trufflehog"]}'
+
+model_list:
+  - model_name: gpt-4o-mini
+    litellm_params:
+      model: openai/gpt-4o-mini
+      api_key: os.environ/OPENAI_API_KEY
+
+guardrails:
+  # Scan prompts on the way in. `pre_call` is the only mode that can rewrite the
+  # request, so `redact` requires it.
+  - guardrail_name: trufflehog
+    litellm_params:
+      guardrail: litellm_trufflehog.TrufflehogGuardrail
+      mode: pre_call
+      default_on: true
+
+      # block  - reject the call (default)
+      # redact - mask the secrets and continue
+      # log    - warn and allow through
+      on_detection: block
+
+      # minimal (~34 detectors) | core (~128, default) | all (~858)
+      profile: core
+
+      # Add or remove detectors using trufflehog's own selector syntax.
+      # detectors: ["Vercel", "Notion", "Github.v2"]
+      # exclude_detectors: ["URI", "JDBC"]
+
+      # Live verification transmits candidate secrets to third-party APIs and
+      # adds their latency to every request containing a match.
+      verify: false
+
+  # Scan model output too. Streaming is handled by the withheld-tail mechanism,
+  # so a secret cannot be split across two chunks.
+  - guardrail_name: trufflehog-response
+    litellm_params:
+      guardrail: litellm_trufflehog.TrufflehogGuardrail
+      mode: post_call
+      default_on: true
+      on_detection: block
+      profile: core
+
+litellm_settings:
+  set_verbose: false
