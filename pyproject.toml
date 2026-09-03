@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "litellm-trufflehog"
-version = "0.1.0"
+version = "0.1.1"
 description = "Simple & fast trufflehog secrets scanning for LiteLLM"
 readme = "README.md"
 # 3.10+ because the dataclasses use slots=True.

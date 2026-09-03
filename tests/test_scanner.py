@@ -10,10 +10,12 @@ import pytest
 from conftest import (
     AWS_KEY_ID,
     AWS_SECRET,
+    BASE64_SHAPED_SECRET,
     CLEAN_TEXT,
     GITHUB_PAT,
     OPENAI_KEY,
     SLACK_TOKEN,
+    UNBRANDED_SECRET,
 )
 from litellm_trufflehog import (
     Finding,
@@ -150,14 +152,14 @@ def test_report_helpers(scanner: Scanner) -> None:
 
 def test_profiles_are_ordered_by_size(native_available: bool) -> None:
     counts = {}
-    for name in ("minimal", "core", "all"):
+    for name in ("minimal", "core", "all", "paranoid"):
         with Scanner(profile=name) as s:
             counts[name] = s.detector_count
-    assert counts["minimal"] < counts["core"] < counts["all"]
+    assert counts["minimal"] < counts["core"] < counts["all"] < counts["paranoid"]
 
 
 def test_profiles_listing(native_available: bool) -> None:
-    assert set(profiles()) == {"minimal", "core", "all"}
+    assert set(profiles()) == {"minimal", "core", "all", "paranoid"}
 
 
 def test_unknown_profile_is_rejected(native_available: bool) -> None:
@@ -176,6 +178,59 @@ def test_include_detectors_widens_profile(native_available: bool) -> None:
         Scanner(profile="minimal", include_detectors=["Vercel", "Notion"]) as wider,
     ):
         assert wider.detector_count > base.detector_count
+
+
+def test_paranoid_profile_detects_unbranded_secret(native_available: bool) -> None:
+    """A credential with no recognisable issuer: invisible to every provider
+    detector, caught only by the catch-all that `paranoid` adds."""
+    text = f"SEARCH_API_KEY: {UNBRANDED_SECRET}"
+
+    with Scanner(profile="core") as core:
+        assert not core.scan(text).findings
+
+    with Scanner(profile="paranoid") as paranoid:
+        report = paranoid.scan(text)
+    # Labelled by name: the underlying detector_type is the shared CustomRegex slot.
+    assert report.detector_types == ("HighEntropy",)
+    assert labels(report) == {"CustomRegex"}
+    assert report.fully_redactable
+
+
+def test_paranoid_profile_detects_base64_shaped_secret(native_available: bool) -> None:
+    """Why our own catch-all exists: trufflehog's Generic discards any candidate
+    that base64-decodes, which covers a large class of issued API keys."""
+    text = f"SCIM_TOKEN: {BASE64_SHAPED_SECRET}"
+
+    with Scanner(profile="paranoid") as paranoid:
+        assert paranoid.scan(text).detector_types == ("HighEntropy",)
+
+    # Pin the upstream limitation being worked around.
+    with Scanner(profile="core", include_detectors=["Generic"]) as generic:
+        assert not generic.scan(text).findings, "upstream improved; update the docs"
+
+
+def test_catch_all_detectors_are_selectable_by_name(native_available: bool) -> None:
+    """Neither catch-all is in trufflehog's default set, so both are reachable
+    only because we add them to the pool ourselves."""
+    with Scanner(profile="core") as base:
+        expected = base.detector_count
+
+    for selectors, extra in (
+        (["Generic"], 1),
+        (["HighEntropy"], 1),
+        (["Generic", "HighEntropy"], 2),
+    ):
+        with Scanner(profile="core", include_detectors=selectors) as s:
+            assert s.detector_count == expected + extra
+
+
+def test_catch_all_detectors_are_never_implicit(native_available: bool) -> None:
+    """`all` must not pick up a catch-all: it expands to every detector ID in
+    trufflehog's protobuf, which includes both of these slots."""
+    text = f"SCIM_TOKEN: {BASE64_SHAPED_SECRET}\nSEARCH_API_KEY: {UNBRANDED_SECRET}"
+    for profile in ("minimal", "core", "all"):
+        with Scanner(profile=profile) as s:
+            assert not s.scan(text).findings, f"{profile} enabled a catch-all detector"
 
 
 def test_max_bytes_truncates_and_reports(native_available: bool) -> None:

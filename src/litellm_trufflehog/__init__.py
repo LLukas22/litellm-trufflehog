@@ -13,19 +13,21 @@ from typing import TYPE_CHECKING, Any
 
 from ._lib import LIB_PATH_ENV, NativeLibraryNotFound, TrufflehogError, native_library_path
 from .scanner import (
+    FINGERPRINT_BYTES,
     REDACTION_TEMPLATE,
     Finding,
     RedactionError,
     Scanner,
     ScanReport,
     Span,
+    fingerprint,
     get_scanner,
     native_version,
     profiles,
 )
 from .stream import DEFAULT_OVERLAP_CHARS, StreamScanner
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 # Grouped by role rather than sorted: the grouping documents the public API.
 __all__ = [  # noqa: RUF022
@@ -41,6 +43,8 @@ __all__ = [  # noqa: RUF022
     # redaction
     "REDACTION_TEMPLATE",
     "RedactionError",
+    "fingerprint",
+    "FINGERPRINT_BYTES",
     # errors / introspection
     "TrufflehogError",
     "NativeLibraryNotFound",

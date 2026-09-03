@@ -88,12 +88,20 @@ class TrufflehogGuardrail(_Base):
     All parameters are settable from ``litellm_params``:
 
     on_detection
-        ``block`` (default), ``redact`` or ``log``.
+        ``block`` (default), ``redact`` or ``log``. ``redact`` masks each secret
+        with ``[REDACTED:<detector>:<fingerprint>]``, where equal fingerprints mean
+        the same credential appeared more than once; see
+        :func:`~litellm_trufflehog.fingerprint`.
     profile
-        ``minimal``, ``core`` (default) or ``all``.
+        ``minimal``, ``core`` (default), ``all`` or ``paranoid``. ``paranoid`` is
+        ``all`` plus ``HighEntropy``, our catch-all detector and the only way to
+        catch credentials with no recognisable issuer - at a much higher false
+        positive rate, and with matches that can cover the surrounding key name,
+        so prefer it with ``block`` or ``log`` over ``redact``.
     detectors / exclude_detectors
         Adjust the profile using trufflehog's selector syntax (``AWS``,
-        ``Github.v2``, ``1-10``).
+        ``Github.v2``, ``1-10``), plus ``HighEntropy`` for our catch-all and
+        ``Generic`` for trufflehog's.
     verify
         Live-verify candidates. **Off by default**: it transmits the candidate
         secret to a third party.

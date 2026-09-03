@@ -11,7 +11,7 @@ from collections.abc import Iterator
 
 import pytest
 
-from litellm_trufflehog import Scanner
+from litellm_trufflehog import Scanner, fingerprint
 from litellm_trufflehog._lib import NativeLibraryNotFound
 
 # (?:AKIA|ABIA|ACCA)[A-Z0-9]{16}
@@ -24,6 +24,15 @@ GITHUB_PAT = "ghp_Ab3Cd5Ef7Gh9Ij1Kl3Mn5Op7Qr9St1Uv3Wx5"
 OPENAI_KEY = "sk-Qm7Xk2Vp9Rt4T3BlbkFJLs6Wn3Zy8Hq5Jd7Fg2Kv4Mb"
 # xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*
 SLACK_TOKEN = "xoxb-1234567890123-1234567890123-Qm7Xk2Vp9Rt4Ls6Wn3Zy8Hq5"
+
+# No issuer-identifying shape, as an internal service or a proxy hands out: found
+# only by a catch-all detector, so only under the "paranoid" profile.
+UNBRANDED_SECRET = "DlhsHVp-y4qvxL1-koFlber-pMeUMdB"
+# The same, but 28 characters of the base64 alphabet. trufflehog's Generic detector
+# discards anything that base64-decodes; ours is the one that catches this.
+BASE64_SHAPED_SECRET = "1uFtpdS8i8mdY7kq6eetrrBEvOrM"
+# For connection-string fixtures.
+DB_PASSWORD = "iyHlOSsmrVRmHAfRpfPlmKHW"
 
 CLEAN_TEXT = "What is the capital of France? Please answer briefly."
 
@@ -62,3 +71,8 @@ def assert_no_secrets(text: str) -> None:
     """Fail if any known fake secret survives in text."""
     for secret in ALL_SECRETS:
         assert secret not in text, f"secret {secret[:12]}... leaked into output"
+
+
+def redaction(detector: str, secret: str) -> str:
+    """The exact placeholder that redaction writes over ``secret``."""
+    return f"[REDACTED:{detector}:{fingerprint(secret)}]"

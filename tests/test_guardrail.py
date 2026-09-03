@@ -12,7 +12,14 @@ from typing import Literal
 
 import pytest
 
-from conftest import AWS_KEY_ID, AWS_SECRET, CLEAN_TEXT, GITHUB_PAT, assert_no_secrets
+from conftest import (
+    AWS_KEY_ID,
+    AWS_SECRET,
+    CLEAN_TEXT,
+    GITHUB_PAT,
+    assert_no_secrets,
+    redaction,
+)
 from litellm_trufflehog import Scanner, ScanReport
 from litellm_trufflehog.guardrail import (
     DEFAULT_STREAM_HOLDBACK_CHARS,
@@ -104,7 +111,7 @@ def test_redact_masks_and_allows(scanner: Scanner) -> None:
     result = apply(guard, [f"my key is {GITHUB_PAT} thanks", CLEAN_TEXT])
 
     assert GITHUB_PAT not in result["texts"][0]
-    assert "[REDACTED:Github]" in result["texts"][0]
+    assert redaction("Github", GITHUB_PAT) in result["texts"][0]
     assert result["texts"][1] == CLEAN_TEXT
 
 

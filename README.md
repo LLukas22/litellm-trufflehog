@@ -35,8 +35,8 @@ body names detectors and counts only, never the secret.
 | Option | Default | Meaning |
 |---|---|---|
 | `on_detection` | `block` | `block`, `redact` or `log` |
-| `profile` | `core` | `minimal` (~34 detectors), `core` (~128) or `all` (~858) |
-| `detectors` | – | Extra detectors, trufflehog selector syntax (`AWS`, `Github.v2`, `1-10`) |
+| `profile` | `core` | `minimal` (~34 detectors), `core` (~128), `all` (~858) or `paranoid` (~859) |
+| `detectors` | – | Extra detectors, trufflehog selector syntax (`AWS`, `Github.v2`, `1-10`), plus `HighEntropy` |
 | `exclude_detectors` | – | Detectors to drop |
 | `verify` | `false` | Live-verify credentials: **transmits candidates to third parties** |
 | `max_bytes` | `1 MiB` | Truncation limit per text |
@@ -53,8 +53,10 @@ Notes:
 - **Fails closed.** A truncated input or a failed detector blocks by default, because an empty
   report can also mean "we did not manage to look". `redact` falls back to blocking when a secret
   cannot be located.
-- **`Generic` is in no profile.** trufflehog's catch-all high-entropy detector is the largest
-  source of false positives; enable it with `detectors: ["Generic"]`.
+- **Catch-alls are opt-in**, being the largest source of false positives, and their matches can
+  swallow a neighbouring character, so prefer `block` or `log` over `redact`. `HighEntropy` flags
+  high-entropy values near `pass`/`token`/`cred`/`secret`/`key`, and is what `profile: paranoid`
+  adds. trufflehog's own `Generic` is available unchanged as `detectors: ["Generic"]`.
 - **Streaming** is handled by the `stream_holdback_chars` tail, so a secret cannot be split across
   chunks. Use `mode: pre_call` for prompts, where blocking is absolute.
 
@@ -95,17 +97,20 @@ report.fully_redactable   # every finding could be located
 for finding in report:
     finding.detector_type, finding.secret_sha256, finding.spans, finding.verified
 
-masked, report = scanner.redact("id=AKIA… secret=wJalr…")
-# 'id=[REDACTED:AWS] secret=[REDACTED:AWS]'
+masked, report = scanner.redact("id=AKIA… secret=wJalr… again=AKIA…")
+# 'id=[REDACTED:AWS:9f2c1a04] secret=[REDACTED:AWS:be70d3f1] again=[REDACTED:AWS:9f2c1a04]'
 ```
 
-Spans are UTF-8 byte offsets, and multi-part credentials get one span per locatable part.
-`scan_async` offloads to a thread; ctypes releases the GIL, so concurrent scans run in parallel.
-Findings carry `secret_sha256`, not the secret.
+Spans are UTF-8 byte offsets; findings carry `secret_sha256`, not the secret. `scan_async` offloads
+to a thread, and ctypes releases the GIL, so concurrent scans run in parallel.
 
-`StreamScanner` covers the `async_post_call_streaming_iterator_hook` path with an overlapping
-window. Prefer the holdback path: its cost tracks chunk *count*, so a 2 KiB response costs 15 µs
-scanned once but 1.3 ms as 20-character deltas.
+Redaction masks *every* occurrence of a value, and each placeholder ends in a per-process keyed
+fingerprint, so equal tags mean the same credential twice. Pass `template=` to `redact()` to change
+the format (`{detector}` and `{fingerprint}`, both optional).
+
+`StreamScanner` covers the `async_post_call_streaming_iterator_hook` path, but prefer the holdback
+path: its cost tracks chunk *count*, so a 2 KiB response costs 15 µs scanned once but 1.3 ms as
+20-character deltas.
 
 ## Development
 

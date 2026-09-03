@@ -8,9 +8,10 @@ import (
 
 // Profile names accepted by Config.Profile.
 const (
-	ProfileMinimal = "minimal"
-	ProfileCore    = "core"
-	ProfileAll     = "all"
+	ProfileMinimal  = "minimal"
+	ProfileCore     = "core"
+	ProfileAll      = "all"
+	ProfileParanoid = "paranoid"
 )
 
 // DefaultProfile is used when Config.Profile is empty.
@@ -85,8 +86,17 @@ var coreExtraDetectors = []string{
 
 // profileNames returns the detector names making up a named profile.
 //
-// "Generic", trufflehog's catch-all high-entropy detector and the largest source
-// of false positives, is in no profile; only IncludeDetectors reaches it.
+// Neither catch-all detector is ever enabled implicitly. Both match any 16-64
+// printable characters near the words pass/token/cred/secret/key, which makes
+// them the largest source of false positives, and their matches often cover the
+// key name or trailing punctuation rather than just the value - so pair them with
+// a blocking or logging policy rather than redaction.
+//
+//   - "HighEntropy" is ours (see catchall.go) and the one "paranoid" enables.
+//   - "Generic" is trufflehog's, reachable only by naming it in IncludeDetectors.
+//     It is kept unchanged, blind spot included: it discards any candidate that
+//     base64-decodes, so a value that happens to be a multiple of four characters
+//     from the base64 alphabet stays invisible to it.
 func profileNames(profile string) ([]string, error) {
 	switch strings.ToLower(strings.TrimSpace(profile)) {
 	case "":
@@ -101,6 +111,11 @@ func profileNames(profile string) ([]string, error) {
 	case ProfileAll:
 		// "all" is a special group understood by trufflehog's detector parser.
 		return []string{ProfileAll}, nil
+	case ProfileParanoid:
+		// Everything, plus our catch-all. Not trufflehog's Generic: the two
+		// overlap almost entirely, so enabling both would report most secrets
+		// twice while re-introducing the base64 blind spot for the rest.
+		return []string{ProfileAll, catchAllSelector}, nil
 	default:
 		return nil, fmt.Errorf("unknown profile %q (want one of: %s)",
 			profile, strings.Join(Profiles(), ", "))
@@ -109,7 +124,7 @@ func profileNames(profile string) ([]string, error) {
 
 // Profiles returns the supported profile names, sorted.
 func Profiles() []string {
-	p := []string{ProfileAll, ProfileCore, ProfileMinimal}
+	p := []string{ProfileAll, ProfileCore, ProfileMinimal, ProfileParanoid}
 	sort.Strings(p)
 	return p
 }

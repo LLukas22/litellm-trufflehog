@@ -2,18 +2,30 @@
 
 from __future__ import annotations
 
+import hashlib
+import re
+
 import pytest
 
 from conftest import (
     AWS_KEY_ID,
     AWS_SECRET,
     CLEAN_TEXT,
+    DB_PASSWORD,
     GITHUB_PAT,
     OPENAI_KEY,
     SLACK_TOKEN,
     assert_no_secrets,
+    redaction,
 )
-from litellm_trufflehog import RedactionError, Scanner, ScanReport, Span
+from litellm_trufflehog import (
+    FINGERPRINT_BYTES,
+    RedactionError,
+    Scanner,
+    ScanReport,
+    Span,
+    fingerprint,
+)
 from litellm_trufflehog.scanner import Finding, _merge_labelled_spans
 
 
@@ -22,7 +34,7 @@ def test_redacts_single_secret(scanner: Scanner) -> None:
     masked, report = scanner.redact(text)
 
     assert GITHUB_PAT not in masked
-    assert "[REDACTED:Github]" in masked
+    assert redaction("Github", GITHUB_PAT) in masked
     assert masked.startswith("my token is ")
     assert masked.endswith(" ok")
     assert len(report.findings) >= 1
@@ -53,7 +65,39 @@ def test_redacts_repeated_occurrences(scanner: Scanner) -> None:
     text = f"a={GITHUB_PAT} b={GITHUB_PAT} c={GITHUB_PAT}"
     masked, _ = scanner.redact(text)
     assert GITHUB_PAT not in masked
-    assert masked.count("[REDACTED:Github]") == 3
+    assert masked.count(redaction("Github", GITHUB_PAT)) == 3
+
+
+def test_redacts_repeats_of_a_deduplicated_secret(scanner: Scanner) -> None:
+    """OpenAI's detector collapses identical results, so counting results would
+    mask the first copy and ship the second."""
+    text = f"OPENAI_API_KEY: {OPENAI_KEY}\nCOPY_OF_THE_SAME: {OPENAI_KEY}"
+    masked, report = scanner.redact(text)
+
+    assert OPENAI_KEY not in masked
+    assert masked.count(redaction("OpenAI", OPENAI_KEY)) == 2
+    # One credential in two places, not two credentials.
+    assert len(report.findings) == 1
+
+
+def test_redacts_repeats_of_a_multipart_credential_part(scanner: Scanner) -> None:
+    """The AWS secret access key exists only inside RawV2, never as a whole value."""
+    text = f"id={AWS_KEY_ID}\nsecret={AWS_SECRET}\nbackup={AWS_SECRET}"
+    masked, _ = scanner.redact(text)
+
+    assert_no_secrets(masked)
+    assert masked.count(redaction("AWS", AWS_SECRET)) == 2
+
+
+def test_short_connection_string_fragments_are_left_alone(scanner: Scanner) -> None:
+    """The counterweight: masking every "5432" or "postgresql" would mangle text."""
+    prose = "postgresql on port 5432 at db-primary as admin"
+    text = f"DB: postgresql://admin:{DB_PASSWORD}@db-primary:5432/appdb\n{prose}"
+    masked, report = scanner.redact(text)
+
+    if not report.findings:
+        pytest.skip("Postgres detector did not fire; nothing to assert")
+    assert masked.endswith(prose), f"prose was mangled: {masked!r}"
 
 
 # -- the UTF-8 trap ---------------------------------------------------------
@@ -76,7 +120,7 @@ def test_redaction_preserves_non_ascii_context(scanner: Scanner, prefix: str, su
     masked, _ = scanner.redact(text)
 
     assert GITHUB_PAT not in masked
-    assert masked == f"{prefix}[REDACTED:Github]{suffix}"
+    assert masked == f"{prefix}{redaction('Github', GITHUB_PAT)}{suffix}"
 
 
 def test_redaction_with_multibyte_between_two_secrets(scanner: Scanner) -> None:
@@ -102,6 +146,55 @@ def test_custom_template(scanner: Scanner) -> None:
     masked, _ = scanner.redact(f"token {GITHUB_PAT}", template="<<{detector} removed>>")
     assert "<<Github removed>>" in masked
     assert GITHUB_PAT not in masked
+
+
+def test_custom_template_may_use_the_fingerprint_alone(scanner: Scanner) -> None:
+    masked, _ = scanner.redact(f"token {GITHUB_PAT}", template="<{fingerprint}>")
+    assert f"<{fingerprint(GITHUB_PAT)}>" in masked
+
+
+# -- fingerprints -----------------------------------------------------------
+
+
+def _tags(masked: str) -> list[str]:
+    """The fingerprints of every placeholder in a redacted text, in order."""
+    return re.findall(r"\[REDACTED:[^:\]]+:([0-9a-f]+)\]", masked)
+
+
+def test_fingerprint_is_short_and_hex() -> None:
+    tag = fingerprint(GITHUB_PAT)
+    assert len(tag) == FINGERPRINT_BYTES * 2
+    assert set(tag) <= set("0123456789abcdef")
+
+
+def test_fingerprint_discloses_nothing_about_the_secret() -> None:
+    """Keyed, so the tag is neither the secret nor a guessable digest of it."""
+    tag = fingerprint(GITHUB_PAT)
+    assert tag not in GITHUB_PAT
+    assert not hashlib.sha256(GITHUB_PAT.encode()).hexdigest().startswith(tag)
+
+
+def test_fingerprint_accepts_str_and_bytes() -> None:
+    assert fingerprint(GITHUB_PAT) == fingerprint(GITHUB_PAT.encode("utf-8"))
+
+
+def test_repeated_secret_gets_one_fingerprint(scanner: Scanner) -> None:
+    """The point of the tag: telling one secret twice from two secrets."""
+    text = f"a={GITHUB_PAT} b={GITHUB_PAT}"
+    masked, _ = scanner.redact(text)
+
+    tags = _tags(masked)
+    assert len(tags) == 2
+    assert tags[0] == tags[1] == fingerprint(GITHUB_PAT)
+
+
+def test_distinct_secrets_get_distinct_fingerprints(scanner: Scanner) -> None:
+    text = f"gh={GITHUB_PAT}\nslack={SLACK_TOKEN}"
+    masked, _ = scanner.redact(text)
+
+    tags = _tags(masked)
+    assert len(tags) == 2
+    assert tags[0] != tags[1]
 
 
 def test_unlocatable_finding_refuses_to_redact() -> None:

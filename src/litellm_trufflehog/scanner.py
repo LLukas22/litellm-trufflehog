@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
+import secrets
 import threading
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -13,19 +15,44 @@ from typing import Any
 from ._lib import TrufflehogError, check, last_error, lib
 
 __all__ = [
+    "FINGERPRINT_BYTES",
     "REDACTION_TEMPLATE",
     "Finding",
     "RedactionError",
     "ScanReport",
     "Scanner",
     "Span",
+    "fingerprint",
     "get_scanner",
     "native_version",
     "profiles",
 ]
 
-#: Replacement written over a detected secret. ``{detector}`` is substituted.
-REDACTION_TEMPLATE = "[REDACTED:{detector}]"
+#: Replacement written over a detected secret. ``{detector}`` and
+#: ``{fingerprint}`` are substituted; a template may use either or neither.
+REDACTION_TEMPLATE = "[REDACTED:{detector}:{fingerprint}]"
+
+#: Digest length of a fingerprint in bytes; renders as twice as many hex characters.
+FINGERPRINT_BYTES = 4
+
+#: Keyed, so that a fingerprint cannot be attacked back to its secret: unlike a
+#: finding's SHA-256, this tag leaves the trust boundary inside the redacted text,
+#: and a short *unkeyed* digest of a weak password would be trivial to crack.
+#:
+#: The key is random per process, which makes tags comparable for the lifetime of
+#: one worker and meaningless anywhere else.
+_FINGERPRINT_KEY = secrets.token_bytes(32)
+
+
+def fingerprint(secret: str | bytes) -> str:
+    """Return a short, non-reversible tag identifying a secret value.
+
+    Equal secrets produce equal fingerprints within a process, so the redacted
+    text shows whether two masked spans held the same credential. Deliberately
+    *not* stable across processes or restarts: see :data:`_FINGERPRINT_KEY`.
+    """
+    data = secret.encode("utf-8") if isinstance(secret, str) else bytes(secret)
+    return hashlib.blake2b(data, key=_FINGERPRINT_KEY, digest_size=FINGERPRINT_BYTES).hexdigest()
 
 
 class RedactionError(TrufflehogError):
@@ -313,6 +340,10 @@ class Scanner:
 
         Go reports UTF-8 byte offsets, so the splice happens on bytes: slicing
         the ``str`` would use code point indices and corrupt non-ASCII text.
+
+        Each replacement carries a :func:`fingerprint` of the bytes it covers, so
+        repeated masks can be told apart: two identical tags mean one credential
+        appearing twice, two different tags mean two credentials.
         """
         if not report.fully_redactable:
             unlocatable = sorted({f.label for f in report.findings if not f.redactable})
@@ -330,7 +361,8 @@ class Scanner:
                     f"span [{start}:{end}] is out of range for a {len(raw)}-byte input"
                 )
             pieces.append(raw[cursor:start])
-            pieces.append(template.format(detector=label).encode("utf-8"))
+            replacement = template.format(detector=label, fingerprint=fingerprint(raw[start:end]))
+            pieces.append(replacement.encode("utf-8"))
             cursor = end
         pieces.append(raw[cursor:])
 

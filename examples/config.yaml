@@ -31,10 +31,15 @@ guardrails:
       on_detection: block
 
       # minimal (~34 detectors) | core (~128, default) | all (~858)
+      # paranoid (~859) adds our `HighEntropy` catch-all: the only way to catch
+      # credentials with no recognisable issuer (internal tokens, proxy keys,
+      # PASSWORD: <random>), at a much higher false positive rate. Pair it with
+      # `block` rather than `redact`.
       profile: core
 
-      # Add or remove detectors using trufflehog's own selector syntax.
-      # detectors: ["Vercel", "Notion", "Github.v2"]
+      # Add or remove detectors using trufflehog's own selector syntax, plus
+      # `HighEntropy` (ours) and `Generic` (trufflehog's catch-all, unchanged).
+      # detectors: ["Vercel", "Notion", "Github.v2", "HighEntropy"]
       # exclude_detectors: ["URI", "JDBC"]
 
       # Live verification transmits candidate secrets to third-party APIs and

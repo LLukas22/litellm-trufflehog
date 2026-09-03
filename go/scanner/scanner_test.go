@@ -26,6 +26,24 @@ const (
 
 	// xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*
 	fakeSlackBotToken = "xoxb-1234567890123-1234567890123-Qm7Xk2Vp9Rt4Ls6Wn3Zy8Hq5"
+
+	// A credential with no issuer-identifying shape, as an internal service or a
+	// proxy hands out: invisible to every provider detector, so only a catch-all
+	// can find it. The hyphens matter - they keep it from decoding as base64,
+	// which trufflehog's Generic detector silently discards.
+	fakeUnbrandedSecret = "DlhsHVp-y4qvxL1-koFlber-pMeUMdB"
+
+	// The same kind of credential, but 28 characters from the base64 alphabet, so
+	// it decodes cleanly and Generic throws it away. Pins that blind spot.
+	fakeBase64ShapedSecret = "1uFtpdS8i8mdY7kq6eetrrBEvOrM"
+
+	// A database password, for connection-string fixtures. Kept separate from the
+	// AWS fixtures so a test asserting on connection-string parts cannot be
+	// confused about which credential a span belongs to.
+	fakeDBPassword = "iyHlOSsmrVRmHAfRpfPlmKHW"
+
+	// A UUID, which every catch-all must reject. Random, not from any real tenant.
+	fakeUUID = "8cd69905-409f-459e-ba39-1d5cb354af48"
 )
 
 // fakeAnthropicKey satisfies sk-ant-api03-[\w\-]{93}AA.
@@ -55,6 +73,21 @@ func hasDetector(r Report, want string) bool {
 		}
 	}
 	return false
+}
+
+// spanTexts returns the input covered by every span one detector reported, which
+// is exactly what redaction would mask.
+func spanTexts(r Report, detector string, data []byte) []string {
+	var out []string
+	for _, f := range r.Findings {
+		if f.DetectorType != detector {
+			continue
+		}
+		for _, sp := range f.Spans {
+			out = append(out, string(data[sp.Start:sp.End]))
+		}
+	}
+	return out
 }
 
 func TestScanDetectsCoreProfileSecrets(t *testing.T) {
@@ -202,6 +235,117 @@ func TestRepeatedSecretGetsDistinctSpans(t *testing.T) {
 	}
 	if starts[0] == starts[1] {
 		t.Errorf("expected distinct span starts, got %v", starts)
+	}
+}
+
+// Several detectors deduplicate identical results internally - OpenAI does - so
+// spans must come from what the text contains, not from how many results came
+// back. Otherwise redaction masks the first copy and ships the second.
+func TestSpansCoverDeduplicatedRepeatedSecret(t *testing.T) {
+	s := newTestScanner(t, Config{Profile: ProfileMinimal})
+	text := "OPENAI_API_KEY: " + fakeOpenAIKey + "\nCOPY_OF_THE_SAME: " + fakeOpenAIKey + "\n"
+	data := []byte(text)
+
+	report := s.Scan(context.Background(), data)
+	covered := spanTexts(report, "OpenAI", data)
+
+	var hits int
+	for _, got := range covered {
+		if got == fakeOpenAIKey {
+			hits++
+		}
+	}
+	if hits != 2 {
+		t.Errorf("expected both copies of the key to be spanned, got %d of 2 (%q)",
+			hits, covered)
+	}
+}
+
+// The same, for a part that only exists inside RawV2: AWS reports Raw=<key id>
+// and RawV2=<key id>:<secret access key>, so the secret is never a whole value.
+func TestSpansCoverRepeatedMultipartPart(t *testing.T) {
+	s := newTestScanner(t, Config{Profile: ProfileMinimal})
+	text := "id=" + fakeAWSKeyID + "\nsecret=" + fakeAWSSecret +
+		"\nbackup_secret=" + fakeAWSSecret + "\n"
+	data := []byte(text)
+
+	report := s.Scan(context.Background(), data)
+	covered := spanTexts(report, "AWS", data)
+
+	var secrets int
+	for _, got := range covered {
+		if got == fakeAWSSecret {
+			secrets++
+		}
+	}
+	if secrets != 2 {
+		t.Errorf("expected both copies of the secret access key to be spanned, "+
+			"got %d of 2 (%q)", secrets, covered)
+	}
+}
+
+// The counterweight: short RawV2 fragments are hosts, ports and database names,
+// and masking every occurrence of those would mangle ordinary text.
+func TestShortFragmentsAreNotMaskedEverywhere(t *testing.T) {
+	s := newTestScanner(t, Config{Profile: ProfileCore})
+	const prose = "\nnote: postgresql on port 5432 at db-primary as admin\n"
+	text := "DB: postgresql://admin:" + fakeDBPassword + "@db-primary:5432/appdb" + prose
+	data := []byte(text)
+	proseAt := strings.Index(text, prose)
+
+	report := s.Scan(context.Background(), data)
+	if !hasDetector(report, "Postgres") {
+		t.Skipf("Postgres detector did not fire; nothing to assert (%v)", detectorTypes(report))
+	}
+	for _, f := range report.Findings {
+		for _, sp := range f.Spans {
+			if sp.Start >= proseAt {
+				t.Errorf("span %+v masked %q in prose after the connection string",
+					sp, data[sp.Start:sp.End])
+			}
+		}
+	}
+}
+
+func TestLocateAllFindsEveryOccurrence(t *testing.T) {
+	data := []byte("xx-secret-xx-secret-xx")
+	got := newOffsetTracker(data).locateAll([]byte("secret"))
+
+	want := []Span{{Start: 3, End: 9}, {Start: 13, End: 19}}
+	if len(got) != len(want) {
+		t.Fatalf("locateAll returned %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("span %d: got %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestLocateAllIgnoresShortAndAbsentFragments(t *testing.T) {
+	tracker := newOffsetTracker([]byte("abc secret"))
+	if got := tracker.locateAll([]byte("ab")); got != nil {
+		t.Errorf("expected nothing below minCandidateLen, got %+v", got)
+	}
+	if got := tracker.locateAll([]byte("missing")); got != nil {
+		t.Errorf("expected nothing for an absent fragment, got %+v", got)
+	}
+}
+
+func TestCandidateSecretsFlagsSplitPartsAsFragments(t *testing.T) {
+	got := candidateSecrets("", []byte(fakeAWSKeyID), []byte(fakeAWSKeyID+":"+fakeAWSSecret))
+
+	for _, c := range got {
+		switch string(c.value) {
+		case fakeAWSKeyID, fakeAWSKeyID + ":" + fakeAWSSecret:
+			if !c.whole {
+				t.Errorf("%q is a value the detector reported, expected whole=true", c.value)
+			}
+		case fakeAWSSecret:
+			if c.whole {
+				t.Errorf("%q was split out of RawV2, expected whole=false", c.value)
+			}
+		}
 	}
 }
 
